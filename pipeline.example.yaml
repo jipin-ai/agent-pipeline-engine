@@ -1,0 +1,58 @@
+# Agent Pipeline Engine — 示例管道配置
+#
+# 将此文件复制为 pipeline.yaml 并根据你的 Agent 角色修改。
+# 然后通过 poll_agents.py（cron）和 gate_judge.py（门禁判定）运行管道。
+
+stages:
+  # 阶段 1: 五问确认
+  - id: five_questions
+    trigger: task_created
+    action: a2a_orchestrate [reviewer_a, reviewer_b]
+    description: "双审查者同时收到五问，确认任务拆解粒度"
+    polling:
+      interval: 5m
+      timeout: 120s
+      retry_policy: infinite
+    gate:
+      condition: reviewer_a_confirmed == 1 AND reviewer_b_confirmed == 1
+      on_blocked: hold
+      hold_timeout: 2h
+      on_escalate: notify_architect
+      on_pass: dispatch_worker
+    human_interrupt: [owner]
+
+  # 阶段 2: 执行
+  - id: worker_exec
+    trigger: five_questions.pass
+    action: a2a_call worker
+    description: "派发实现任务给执行者"
+    gate:
+      condition: status == 'worker_done'
+      on_blocked: return_to_worker
+      on_pass: dispatch_reviewer
+    human_interrupt: [architect]
+
+  # 阶段 3: 审查
+  - id: review
+    trigger: worker_exec.pass
+    action: a2a_call reviewer
+    description: "审查者独立验证执行结果（盲审）"
+    gate:
+      condition: status == 'review_passed'
+      on_blocked: return_to_reviewer
+      on_pass: dispatch_deployer
+    human_interrupt: [owner]
+
+  # 阶段 4: 部署
+  - id: deploy
+    trigger: review.pass
+    action: a2a_call deployer
+    description: "部署到测试环境，四证自证"
+    prerequisites:
+      - artifact_exists
+      - port_no_conflict
+      - not_frozen_by_owner
+    gate:
+      condition: status == 'deployed'
+      on_pass: ready_for_human
+    human_interrupt: [owner]
