@@ -1,17 +1,7 @@
-# Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-
-# Database
+*.pyc
+.pipeline/
 *.db
 *.db-journal
 *.db-wal
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+*.db-shm
