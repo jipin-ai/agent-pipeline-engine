@@ -14,37 +14,37 @@
 <br>
 
 ```
-          BA 提交需求
-               │
-               ▼
-  ┌─────────────────────────────┐
-  │  Stage 1: ORC EARS 拆解       │
-  │  需求 → 子任务 + 验收标准        │
-  │  Gate: 五问确认(DEV+QA并行)     │
-  │  双方确认 → 放行                │
-  │  阻塞 2h → 升级通知架构师        │
-  └──────────┬──────────────────┘
-             │ PASS
-             ▼
-  ┌─────────────────────────────┐
-  │  Stage 2: DEV 编码             │
-  │  Gate: worker_done → 放行       │
-  └──────────┬──────────────────┘
-             │ PASS
-             ▼
-  ┌─────────────────────────────┐
-  │  Stage 3: QA 盲审              │
-  │  Gate: review_passed → 放行    │
-  └──────────┬──────────────────┘
-             │ PASS
-             ▼
-  ┌─────────────────────────────┐
-  │  Stage 4: DEMO 部署             │
-  │  四证自证 + 端口不冲突             │
-  │  Gate: deployed → 等待甲方验收    │
-  └─────────────────────────────┘
++---------------+
+|   received    |
++---------------+
+       |
+       v
++---------------+
+|  ears_draft   |
++---------------+
+       |
+       | [G1] DEV+QA dual-confirm
+       v
++---------------+
+|     ready     |
++---------------+
+       |
+       v
++---------------+
+|   dev_done    |
++---------------+
+       |
+       v
++---------------+
+|  qa_passed    |
++---------------+
+       |
+       | [G2] customer acceptance
+       v
++---------------+
+| demo_deployed |
++---------------+
 ```
-
 <br>
 
 ## 这是什么
@@ -126,21 +126,10 @@ python gate_judge.py task-001
 ## 状态机
 
 ```
- received ──► ears_draft ──► ready ──► dev_done ──► qa_passed ──► demo_deployed
-   │              │            │          │            │              │
-   │          Gate: DEV+QA    │          │            │         等待甲方验收
-   │          双方确认 ?       │          │            │
-   │           │      │       │          │            │
-   │         PASS  BLOCKED    │          │            │
-   │           │      │       │          │            │
-   │         ready  hold      │          │            │
-   │           │   (超时升级)   │          │            │
-   │           │              │          │            │
-   └── 等待 ORC 拆解          │          │            │
-                              │          │            │
-                        派发 DEV    QA 盲审    DEMO 部署
+received --> ears_draft --> ready --> dev_done --> qa_passed --> demo_deployed
+       ^G1                                ^G2
+G1 = DEV+QA dual-confirm gate   G2 = customer acceptance gate
 ```
-
 每个状态转换由 `gate_judge.py` 判定，`poll_agents.py` 更新 Agent 确认状态。
 
 <br>
@@ -148,18 +137,11 @@ python gate_judge.py task-001
 ## 生态系统
 
 ```
-┌────────────────────────────────────────┐
-│  agent-pipeline-engine  ← 编排层       │
-│  谁做完了？下一步谁？谁卡住了？           │
-├────────────────────────────────────────┤
-│  Hermes Agent           ← 运行时       │
-│  A2A 通信 + Skills + 记忆              │
-├────────────────────────────────────────┤
-│  TencentDB-Agent-Memory ← 记忆层       │
-│  持久化记忆 + 版本 + 权限              │
-└────────────────────────────────────────┘
++-------------------+    +-------------------+    +-------------------+
+|   orchestration   |    |      runtime      |    |      memory       |
+| pipeline-engine   | -> |   Hermes Agent    | -> |   Agent-Memory    |
++-------------------+    +-------------------+    +-------------------+
 ```
-
 三个项目互补，不是竞争关系。这个项目只做编排——把 Hermes Agent 的多 Agent 通信管起来。
 
 <br>
