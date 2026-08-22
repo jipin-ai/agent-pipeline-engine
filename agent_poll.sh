@@ -3,7 +3,7 @@
 # 用法: AGENT_NAME=DEV-01 ./agent_poll.sh   （TOKEN 从 ~/.hermes/.env 读）
 set -u
 AGENT_NAME="${AGENT_NAME:?need AGENT_NAME}"
-API="http://123.56.25.232:8800"
+API="${PIPELINE_API:-http://127.0.0.1:8800}"
 TOKEN=$(grep '^A2A_BEARER_TOKEN=' "$HOME/.hermes/.env" | head -1 | cut -d= -f2)
 
 # 1. 心跳

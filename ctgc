@@ -11,7 +11,7 @@
 """
 import json, os, sys, urllib.request
 
-BASE = os.environ.get("CTGC_API_URL", "http://123.56.25.232:8800")
+BASE = os.environ.get("CTGC_API_URL", "http://127.0.0.1:8800")
 TOKEN = os.environ.get("CTGC_API_TOKEN", "")
 
 def call(method, path, body=None, actor="architect"):
