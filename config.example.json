@@ -1,0 +1,34 @@
+{
+  "api_token": "<YOUR_CTGC_API_TOKEN>",
+  "a2a_token": "<YOUR_A2A_TOKEN>",
+  "ip_whitelist": [
+    "127.0.0.1",
+    "<AGENT_NODE_IP_1>",
+    "<AGENT_NODE_IP_2>"
+  ],
+  "agent_urls": {
+    "QA-01": "http://<QA_IP>:19901/",
+    "DEMO-01": "http://<DEMO_IP>:19902/",
+    "ORC-01": "http://<ORC_IP>:19903/",
+    "DEV-01": "http://<DEV_IP>:19904/",
+    "BA-01": "http://<BA_IP>:19905/"
+  },
+  "feishu_webhook": "",
+  "heartbeat_timeout_s": 360,
+  "alert_cooldown_s": 900,
+  "dispatch_lease_s": 300,
+  "feishu": {
+    "chat_id": "<YOUR_FEISHU_CHAT_ID>",
+    "app_id": "<YOUR_FEISHU_APP_ID>",
+    "app_secret": "<YOUR_FEISHU_APP_SECRET>",
+    "at_mapping": {
+      "owner": "<OWNER_NAME>",
+      "cli": "<CLI_NAME>",
+      "BA-01": "<BA_BOT_NAME>",
+      "DEV-01": "<DEV_BOT_NAME>",
+      "QA-01": "<QA_BOT_NAME>",
+      "ORC-01": "<ORC_BOT_NAME>",
+      "DEMO-01": "<DEMO_BOT_NAME>"
+    }
+  }
+}
