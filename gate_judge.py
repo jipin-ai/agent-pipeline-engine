@@ -1,149 +1,90 @@
-#!/usr/bin/env python3
-"""
-Agent Pipeline Engine — 门禁判定
-读 SQLite 状态机，三分支输出：PASS / BLOCKED / NOT_FOUND
-"""
-import sqlite3
-import sys
-import os
-from pathlib import Path
+"""gate_judge.py — 证据门禁判定（v5 第四章）。不依赖 Agent 自报。"""
+import urllib.request
 
-DB_PATH = os.environ.get("PIPELINE_DB", str(Path.home() / ".pipeline" / "pipeline.db"))
+PASS, BLOCKED, WAITING = "PASS", "BLOCKED", "WAITING"
 
-# 状态流转规则
-STATUS_GATES = {
-    "received": {
-        "next": "ears_draft",
-        "description": "等待 ORC 拆解"
-    },
-    "ears_draft": {
-        "condition": "dev_confirmed == 1 AND qa_confirmed == 1",
-        "on_pass": "ready",
-        "on_blocked": "hold",
-        "description": "等待 DEV+QA 五问确认"
-    },
-    "ready": {
-        "next": "dev_done",
-        "description": "门禁绿灯，派发 DEV"
-    },
-    "dev_done": {
-        "next": "qa_passed",
-        "description": "DEV 完成，派发 QA"
-    },
-    "qa_passed": {
-        "next": "demo_deployed",
-        "description": "QA 通过，派发 DEMO"
-    },
-    "demo_deployed": {
-        "next": None,
-        "description": "等待甲方验收"
-    }
+# 人类状态：不由 dispatcher 推进，也豁免超时
+HUMAN_STATES = {"waiting_human", "escalate_human"}
+TERMINAL_STATES = {"done", "cancelled"}
+
+STATUS_NEXT = {
+    "received": "ears_draft",
+    "ears_draft": "waiting_human",
+    "ready": "dev_working",
+    "dev_working": "qa_working",
+    "qa_working": "demo_working",
+    "demo_working": "done",
+}
+
+# 每个工作站的负责 Agent（A2A 唤醒用）
+STATUS_AGENT = {
+    "ears_draft": "BA-01",
+    "ready": "ORC-01",
+    "dev_working": "DEV-01",
+    "qa_working": "QA-01",
+    "demo_working": "DEMO-01",
 }
 
 
-class GateJudge:
-    def __init__(self, db_path: str = DB_PATH):
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
+def judge(task):
+    """返回 (verdict, evidence)。task 为 sqlite3.Row。"""
+    s = task["status"]
 
-    def judge(self, task_id: str) -> dict:
-        """判定管道状态。返回 {verdict, current_status, details}"""
-        row = self.conn.execute(
-            "SELECT * FROM pipeline_status WHERE task_id = ?", (task_id,)
-        ).fetchone()
+    if s in TERMINAL_STATES:
+        return WAITING, "终态"
+    if s in HUMAN_STATES:
+        return WAITING, "等待人类"
+    if s == "blocked":
+        return WAITING, "外部依赖阻塞"
 
-        if not row:
-            return {
-                "verdict": "NOT_FOUND",
-                "task_id": task_id,
-                "details": "任务不存在"
-            }
+    if s == "received":
+        return PASS, "自动进入 BA"
 
-        row = dict(row)
-        current = row["status"]
+    if s == "ears_draft":
+        if task["ears_doc_path"]:
+            return PASS, "EARS 文档已提交"
+        return BLOCKED, "无 EARS 文档"
 
-        if current not in STATUS_GATES:
-            return {
-                "verdict": "PASS",
-                "task_id": task_id,
-                "current_status": current,
-                "details": f"未知状态 '{current}'，手动判定"
-            }
+    if s == "ready":
+        if not task["orc_doc_path"]:
+            return BLOCKED, "无拆解文档"
+        if not (task["dev_confirmed"] and task["qa_confirmed"]):
+            return BLOCKED, "五问双确认未齐"
+        return PASS, "拆解 + 双确认完成"
 
-        gate = STATUS_GATES[current]
+    if s == "dev_working":
+        if not task["git_commit"]:
+            return BLOCKED, "无 git commit"
+        if not task["pytest_report_path"]:
+            return BLOCKED, "无 pytest 报告"
+        if not task["artifact_sha256"]:
+            return BLOCKED, "无制品 SHA256"
+        return PASS, "DEV 证据齐"
 
-        if "condition" in gate:
-            try:
-                passed = eval(
-                    gate["condition"],
-                    {},
-                    {
-                        "dev_confirmed": row["dev_confirmed"],
-                        "qa_confirmed": row["qa_confirmed"]
-                    }
-                )
-            except Exception as e:
-                return {
-                    "verdict": "ERROR",
-                    "task_id": task_id,
-                    "current_status": current,
-                    "details": f"条件求值失败: {e}"
-                }
+    if s == "qa_working":
+        if not task["test_report_path"]:
+            return BLOCKED, "无测试报告"
+        if task["coverage_pct"] is None or task["coverage_pct"] < 60:
+            return BLOCKED, "覆盖率不足 60%"
+        if task["blocking_issues"]:
+            return BLOCKED, "有 blocking issue"
+        return PASS, "QA 证据齐"
 
-            if passed:
-                return {
-                    "verdict": "PASS",
-                    "task_id": task_id,
-                    "current_status": current,
-                    "next_status": gate["on_pass"],
-                    "details": f"{gate['description']} → {gate['on_pass']}"
-                }
-            else:
-                return {
-                    "verdict": "BLOCKED",
-                    "task_id": task_id,
-                    "current_status": current,
-                    "details": f"{gate['description']} — 门禁未通过",
-                    "status_snapshot": {
-                        "dev_confirmed": row["dev_confirmed"],
-                        "qa_confirmed": row["qa_confirmed"]
-                    }
-                }
+    if s == "demo_working":
+        if not task["deploy_url"]:
+            return BLOCKED, "无部署地址"
+        # 无条件活检：自报 health_check_ok 不作为依据（假完成实证：DEMO 自报 1 + 假 URL 混过了门禁）
+        if not _live_health(task["deploy_url"]):
+            return BLOCKED, "健康检查活检未过"
+        return PASS, "DEMO 证据齐（活检通过）"
 
-        return {
-            "verdict": "PASS",
-            "task_id": task_id,
-            "current_status": current,
-            "next_status": gate.get("next"),
-            "details": gate["description"]
-        }
-
-    def all_tasks(self) -> list:
-        """列出所有任务状态"""
-        rows = self.conn.execute(
-            "SELECT task_id, project, status, dev_confirmed, qa_confirmed, updated_at FROM pipeline_status ORDER BY updated_at DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
+    return BLOCKED, f"未知状态 {s}"
 
 
-if __name__ == "__main__":
-    judge = GateJudge()
-
-    if len(sys.argv) > 1:
-        task_id = sys.argv[1]
-        result = judge.judge(task_id)
-    else:
-        tasks = judge.all_tasks()
-        if not tasks:
-            print("(no tasks)")
-            sys.exit(0)
-        for t in tasks:
-            result = judge.judge(t["task_id"])
-            icon = {"PASS": "✅", "BLOCKED": "🔴", "NOT_FOUND": "❓", "ERROR": "💥"}.get(result["verdict"], "⚪")
-            print(f"{icon} {result['task_id']} [{result['current_status']}] {result['details']}")
-        sys.exit(0)
-
-    icon = {"PASS": "✅", "BLOCKED": "🔴", "NOT_FOUND": "❓", "ERROR": "💥"}.get(result["verdict"], "⚪")
-    print(f"{icon} {result['verdict']}: {result['details']}")
-    if "status_snapshot" in result:
-        print(f"   dev_confirmed={result['status_snapshot']['dev_confirmed']} qa_confirmed={result['status_snapshot']['qa_confirmed']}")
+def _live_health(deploy_url):
+    try:
+        url = deploy_url.rstrip("/") + "/health"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status == 200
+    except Exception:
+        return False
