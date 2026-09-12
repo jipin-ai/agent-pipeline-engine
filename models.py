@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS pipeline_status (
     max_retries       INTEGER DEFAULT 3,
     next_retry_at     TEXT,
     priority          INTEGER DEFAULT 1,
-    hold_timeout_m    INTEGER DEFAULT 120
+    hold_timeout_m    INTEGER DEFAULT 120,
+    parent_task_id    TEXT
 );
 CREATE TABLE IF NOT EXISTS audit_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,10 +76,24 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    migrate(conn)
     conn.commit()
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     conn.close()
     return mode
+
+# 幂等迁移：CREATE TABLE IF NOT EXISTS 对已存在的库不加新列，
+# 逐列 PRAGMA table_info 检查 + ALTER TABLE 补齐（pipeline-rework-upload-fix 五问坑 1）
+MIGRATIONS = [
+    ("pipeline_status", "parent_task_id", "ALTER TABLE pipeline_status ADD COLUMN parent_task_id TEXT"),
+]
+
+def migrate(conn):
+    for table, col, ddl in MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            conn.execute(ddl)
+    conn.commit()
 
 def audit(conn, task_id, action, old, new, by, details=""):
     conn.execute(

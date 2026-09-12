@@ -32,6 +32,12 @@ DISPATCH_LEASE_S = _CFG.get("dispatch_lease_s", 300)
 app = FastAPI(title="CTGC Pipeline Dispatcher", version="v5")
 
 
+@app.on_event("startup")
+def _startup_migrate():
+    """uvicorn 启动不经过 __main__，幂等迁移必须挂 startup（否则旧库缺 parent_task_id）。"""
+    models.init_db()
+
+
 # ---------- 认证：Bearer + IP 白名单 ----------
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -101,6 +107,47 @@ def create_task(request: Request, body: dict):
     conn.commit()
     conn.close()
     return {"task_id": tid, "status": "received"}
+
+
+@app.post("/tasks/{task_id}/supplement")
+def supplement_task(task_id: str, request: Request, body: dict):
+    """对终态任务派生补充子任务（v5 机制整改：返工/补充合法入口，零新增状态）。
+
+    子任务复用现有单向状态机 + gate_judge 门禁 + agent_poll 轮询；
+    证据门禁从零起算（dev_working 起点仍要 git_commit+pytest+artifact_sha256）。
+    """
+    actor = _actor(request)
+    # 仅架构师/ORC 可派发（X-CTGC-Actor 为自报头，属君子协议边界，AC-4 已写明）
+    if actor not in ("architect", "ORC-01"):
+        return JSONResponse({"error": "仅架构师/ORC 可派发补充任务"}, 403)
+    conn = models.connect()
+    parent = models.get_task(conn, task_id)
+    if not parent:
+        conn.close()
+        return JSONResponse({"error": "not found"}, 404)
+    if parent["status"] not in gate_judge.TERMINAL_STATES:
+        conn.close()
+        return JSONResponse({"error": f"仅终态任务可派生补充，当前 status={parent['status']}"}, 409)
+    sub_id = body.get("task_id") or f"{task_id}-supplement-{int(time.time())}"
+    if models.get_task(conn, sub_id):
+        conn.close()
+        return JSONResponse({"error": f"子任务 {sub_id} 已存在"}, 409)
+    start = body.get("start_status", "ready")
+    # 起点仅限 ready/dev_working/qa_working/demo_working：
+    # 补充是对已签需求的补漏，不走 BA 反方+签署（received/ears_draft/waiting_human 禁入）
+    if start not in gate_judge.STATUS_NEXT or start in ("received", "ears_draft", "waiting_human"):
+        conn.close()
+        return JSONResponse(
+            {"error": "补充子任务起点必须是 ready/dev_working/qa_working/demo_working"}, 400)
+    conn.execute(
+        "INSERT INTO pipeline_status (task_id, project, parent_task_id, status, priority)"
+        " VALUES (?,?,?,?,?)",
+        (sub_id, parent["project"], task_id, start, int(body.get("priority", 1))))
+    models.audit(conn, sub_id, "supplement", None, start, actor,
+                 f"父任务 {task_id} 派生补充子任务，起点 {start}")
+    conn.commit()
+    conn.close()
+    return {"task_id": sub_id, "parent_task_id": task_id, "status": start}
 
 
 @app.post("/tasks/{task_id}/claim")
